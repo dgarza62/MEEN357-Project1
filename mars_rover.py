@@ -67,17 +67,17 @@ def F_drive():
     C_rr = int(input("what is the rolling resistance coefficient? "))
     v = int(input("what is the velocity of the rover (m/s)? "))
 
-    F_rrs = C_rr*get_mass()*planet['g']*math.cos(math.rad(alpha))
+    F_rrs = C_rr*get_mass()*planet['g']*math.cos(math.radians(alpha))
     F_rr = math.erf(40*v)*(F_rrs)
 
-    F_d = F_rr + get_mass()*planet['g']*math.sin(math.rad(alpha))
+    F_d = F_rr + get_mass()*planet['g']*math.sin(math.radians(alpha))
 
     return F_rrs, F_rr, F_d, alpha
 def F_gravity():
 
     alpha = int(input("what is the angle of the inclined terrain? "))
-    F_xg = get_mass()*planet['g']*math.cos(math.rad(alpha))
-    F_yg = get_mass()*planet['g']*math.sin(math.rad(alpha))
+    F_xg = get_mass()*planet['g']*math.cos(math.radians(alpha))
+    F_yg = get_mass()*planet['g']*math.sin(math.radians(alpha))
 
     F_g = math.sqrt(F_xg**2 + F_yg**2)
 
@@ -90,13 +90,11 @@ def F_rolling():
     return F_rrt
 def F_net():
     _, _, F_d, alpha = F_drive()
-    normal_force = get_mass()*planet['g']*math.cos(alpha)
+    normal_force = get_mass()*planet['g']*math.cos(math.radians(alpha))
 
     # Translational Force
     F_net = math.sqrt((normal_force)**2 + (F_d)**2)
     return F_net
-
-F_gravity()
 
 
 
