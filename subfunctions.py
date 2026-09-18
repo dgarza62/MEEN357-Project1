@@ -1,101 +1,129 @@
-import math
-import scipy as sy
+import numpy as np
+from scipy.special import erf
 
-# connect to static ip
+# (input validation)
 
-# High speed entry into Martian atmosphere
+def _is_scalar(x):
+    return (isinstance(x, (int, float, np.integer, np.floating))
+            and not isinstance(x, (bool, np.bool_)))
 
-# Parachute deployment and deceleration
+def _is_scalar_or_vector(x):
+    if _is_scalar(x):
+        return True
+    if isinstance(x, np.ndarray):
+        return x.ndim <= 1 and np.issubdtype(x.dtype, np.number)
+    return False
 
-# Powered descent
+def _finish(result, original):
+    """Return a float if the original input was a scalar, else an ndarray."""
+    if _is_scalar(original) or (isinstance(original, np.ndarray) and original.ndim == 0):
+        return float(result)
+    return np.asarray(result, dtype=float)
 
-# Sky Crane operation
-# Rover is lowered gently to Martian surface
-# From a hovering platform
+def _require_dict(x, name):
+    if not isinstance(x, dict):
+        raise Exception('%s must be a dict.' % name)
 
+def _require_angles(angle):
+    if not _is_scalar_or_vector(angle):
+        raise Exception('terrain_angle must be a scalar or a 1D numpy array.')
+    if np.any(np.abs(np.asarray(angle, dtype=float)) > 75):
+        raise Exception('All terrain angles must be between -75 and +75 degrees.')
 
-# Once rover on the ground
-# System modeling and preliminary analysis of the rover
+def _require_same_size(a, b):
+    if np.shape(a) != np.shape(b):
+        raise Exception('omega and terrain_angle must be the same size.')
 
-# Dynamical modeling and analysis of the rover
+def _require_Crr(Crr):
+    if not _is_scalar(Crr) or Crr <= 0:
+        raise Exception('Crr must be a positive scalar.')
 
-# Simulation of landing phase
+# Required functions
+def tau_dcmotor(omega, motor):
+    """Motor shaft torque [Nm] for motor shaft speed omega [rad/s]."""
+    if not _is_scalar_or_vector(omega):
+        raise Exception('omega must be a scalar or a 1D numpy array.')
+    _require_dict(motor, 'motor')
 
-# System optimization / Decision making
+    w = np.asarray(omega, dtype=float)
+    tau_s = motor['torque_stall']
+    tau_nl = motor['torque_noload']
+    w_nl = motor['speed_noload']
 
+    tau = tau_s - ((tau_s - tau_nl) / w_nl) * w
+    tau = np.where(w < 0, tau_s, tau)      # spinning backwards -> stall torque
+    tau = np.where(w > w_nl, 0.0, tau)     # faster than no-load -> no torque
+    return _finish(tau, omega)
 
-wheel = {'radius': 0.3,
-         'mass': 1.0}
-speed_reducer = {'type': 'reverted',
-                  'diam_pinion': 0.04,
-                  'diam_gear': 0.07,
-                  'mass': 1.5}
-motor = {'torque_stall': 170,
-         'torque_noload': 0,
-         'speed_noload': 3.80,
-         'mass': 5.0}
-wheel_assembly = {'wheel': wheel,
-                  'speed_reducer': speed_reducer,
-                  'motor': motor,}
-chassis = {'mass': 659}
-science_payload = {'mass': 75}
-power_subsys = {'mass': 90}
-planet = {'g': 3.72}
-rover = {'name': 'Marvin the Martian',
-         'wheel_assembly': wheel_assembly,
-         'chassis': chassis,
-         'science_payload': science_payload,
-         'power_subsys': power_subsys}
+def get_gear_ratio(speed_reducer):
+    """Gear ratio Ng of a reverted gear train: (d2/d1)^2."""
+    _require_dict(speed_reducer, 'speed_reducer')
+    if str(speed_reducer['type']).strip().lower() != 'reverted':
+        raise Exception("Unsupported speed reducer type '%s'. Only 'reverted' is "
+                        "valid in this phase." % speed_reducer['type'])
+    return (speed_reducer['diam_gear'] / speed_reducer['diam_pinion']) ** 2
 
-# DC Motor, Speed Reducer, Drive Wheel
-def get_mass():
-    mass = 6*wheel['mass']+(6*motor['mass'])+science_payload['mass']+power_subsys['mass']+chassis['mass']+speed_reducer['mass']
-    return mass
-def get_gear_ratio():
-    gear_ratio = (speed_reducer['diam_gear']/speed_reducer['diam_pinion']) ** 2
-    return gear_ratio
-def tau_dcmotor():
-    shaft_speed = int(input("what is the shaft speed (rad/s)? "))
+def get_mass(rover):
+    """Total rover mass [kg] (chassis, power, payload, 6 wheel assemblies)."""
+    _require_dict(rover, 'rover')
+    wa = rover['wheel_assembly']
+    per_wheel = wa['wheel']['mass'] + wa['speed_reducer']['mass'] + wa['motor']['mass']
+    return (rover['chassis']['mass'] + rover['power_subsys']['mass']
+            + rover['science_payload']['mass'] + 6 * per_wheel)
 
-    shaft_torque = motor['torque_stall'] - ((motor['torque_stall']-motor['torque_noload'])/(motor['speed_noload']))*shaft_speed
-    shaft_speed = motor['speed_noload']*(1 - ((shaft_torque - motor['torque_noload'])/(motor['torque_stall']-motor['torque_noload'])))
+def F_drive(omega, rover):
+    """Combined drive force [N] from all six wheels for motor shaft speed omega."""
+    if not _is_scalar_or_vector(omega):
+        raise Exception('omega must be a scalar or a 1D numpy array.')
+    _require_dict(rover, 'rover')
 
-    return shaft_speed, shaft_torque
-def F_drive():
-    # Wheel assembly details
-    alpha = int(input("what is the angle of the inclined terrain? "))
-    C_rr = int(input("what is the rolling resistance coefficient? "))
-    shaft_speed, _ = tau_dcmotor()
-    v = shaft_speed*wheel['radius']
+    wa = rover['wheel_assembly']
+    tau_in = tau_dcmotor(omega, wa['motor'])
+    Ng = get_gear_ratio(wa['speed_reducer'])
+    tau_out = Ng * tau_in
+    Fd = 6 * tau_out / wa['wheel']['radius']
+    return _finish(Fd, omega)
 
-    F_rrs = C_rr*get_mass()*planet['g']*math.cos(math.radians(alpha))
-    F_rr = math.erf(40*v)*(F_rrs)
+def F_gravity(terrain_angle, rover, planet):
+    """Gravity force [N] along the direction of travel (uphill -> negative)."""
+    _require_angles(terrain_angle)
+    _require_dict(rover, 'rover')
+    _require_dict(planet, 'planet')
 
-    F_d = F_rr + get_mass()*planet['g']*math.sin(math.radians(alpha))
+    ang = np.asarray(terrain_angle, dtype=float)
+    Fgt = -get_mass(rover) * planet['g'] * np.sin(np.radians(ang))
+    return _finish(Fgt, terrain_angle)
 
-    return F_rrs, F_rr, F_d, alpha
-def F_gravity():
+def F_rolling(omega, terrain_angle, rover, planet, Crr):
+    """Rolling resistance force [N] summed over six wheels (always <= 0)."""
+    if not _is_scalar_or_vector(omega) or not _is_scalar_or_vector(terrain_angle):
+        raise Exception('omega and terrain_angle must be scalars or 1D numpy arrays.')
+    _require_same_size(omega, terrain_angle)
+    _require_angles(terrain_angle)
+    _require_dict(rover, 'rover')
+    _require_dict(planet, 'planet')
+    _require_Crr(Crr)
 
-    alpha = int(input("what is the angle of the inclined terrain? "))
-    F_xg = get_mass()*planet['g']*math.cos(math.radians(alpha))
-    F_yg = get_mass()*planet['g']*math.sin(math.radians(alpha))
+    wa = rover['wheel_assembly']
+    Ng = get_gear_ratio(wa['speed_reducer'])
+    v = wa['wheel']['radius'] * np.asarray(omega, dtype=float) / Ng   # rover speed
+    ang = np.asarray(terrain_angle, dtype=float)
+    Fn = get_mass(rover) * planet['g'] * np.cos(np.radians(ang))       # total normal force
+    Frr = -erf(40 * v) * Crr * Fn                                      # 6 x (Fn/6 * Crr)
+    return _finish(Frr, omega)
 
-    F_g = math.sqrt(F_xg**2 + F_yg**2)
+def F_net(omega, terrain_angle, rover, planet, Crr):
+    """Net force [N] on the rover in its direction of motion."""
+    if not _is_scalar_or_vector(omega) or not _is_scalar_or_vector(terrain_angle):
+        raise Exception('omega and terrain_angle must be scalars or 1D numpy arrays.')
+    _require_same_size(omega, terrain_angle)
+    _require_angles(terrain_angle)
+    _require_dict(rover, 'rover')
+    _require_dict(planet, 'planet')
+    _require_Crr(Crr)
 
-    return F_xg, F_yg, F_g, alpha
-def F_rolling():
-    F_rrs, F_rr, _, _ = F_drive()
-
-    F_rrt = math.sqrt((F_rr)**2 + (F_rrs)**2)
-
-    return F_rrt
-def F_net():
-    _, _, F_d, alpha = F_drive()
-    normal_force = get_mass()*planet['g']*math.cos(math.radians(alpha))
-
-    # Translational Force
-    F_net = math.sqrt((normal_force)**2 + (F_d)**2)
-    return F_net
-
-
+    Fnet = (F_drive(omega, rover)
+            + F_gravity(terrain_angle, rover, planet)
+            + F_rolling(omega, terrain_angle, rover, planet, Crr))
+    return _finish(Fnet, omega)
 
